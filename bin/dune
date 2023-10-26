@@ -1,4 +1,4 @@
 (executable
  (public_name repl)
  (name main)
- (libraries lambda_calc readline))
+ (libraries lambda_calc readline ANSITerminal))

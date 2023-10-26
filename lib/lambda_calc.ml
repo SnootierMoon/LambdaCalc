@@ -39,6 +39,7 @@ EBNF for Lambda Calculus:
 module type ParseType = sig
   val expr : string -> expr_t option
   val stmt : string -> (string * expr_t) option
+  val repr_ex : (int -> string -> string) -> expr_t -> string
   val repr : expr_t -> string
 end
 
@@ -159,9 +160,10 @@ module Parse : ParseType = struct
     | None -> None
 
   (* serialize an expression into a string, using the minimal number of
-     parenthese, with the property that
-       forall e: expr_t . e |> Parser.repr |> Parser.expr = Some e *)
-  let repr e =
+     parenthese, with the property that, for all expressions e without
+     conflicting bound variables:
+         e |> Parser.repr |> Parser.expr = Some e *)
+  let repr_ex fmt e =
     let simple_ident ident =
       match ident.[0] with
       | 'a' .. 'z' | 'A' .. 'Z' ->
@@ -170,17 +172,23 @@ module Parse : ParseType = struct
             (String.sub ident 1 (String.length ident - 1))
       | _ -> false
     in
-    let dot abs repr = if abs then fun rst -> '.' :: repr rst else repr in
+    let lparen = fmt 0 "(" |> String.to_seq |> List.of_seq in
+    let rparen = fmt 0 ")" |> String.to_seq |> List.of_seq in
+    let lambda = fmt 0 "\\" |> String.to_seq |> List.of_seq in
+    let dot = fmt 0 "." |> String.to_seq |> List.of_seq in
+    let add_dot abs repr = if abs then fun rst -> dot @ repr rst else repr in
     let rec dfs abs bvars e =
       match e with
       | BVar idx ->
           let ident = List.nth bvars idx in
           let ident = if simple_ident ident then ident else "{" ^ ident ^ "}" in
-          let rep = dot abs (String.fold_right (fun c l -> c :: l) ident) in
+          let ident = fmt (List.length bvars - idx) ident in
+          let rep = add_dot abs (String.fold_right (fun c l -> c :: l) ident) in
           (false, false, rep)
       | FVar ident ->
           let ident = if simple_ident ident then ident else "{" ^ ident ^ "}" in
-          let rep = dot abs (String.fold_right (fun c l -> c :: l) ident) in
+          let ident = fmt (-1) ident in
+          let rep = add_dot abs (String.fold_right (fun c l -> c :: l) ident) in
           (false, false, rep)
       | App (el, er) ->
           let open_l, _, repr_l = dfs false bvars el in
@@ -188,41 +196,92 @@ module Parse : ParseType = struct
           if open_l then
             if app_r then
               let rep =
-                dot abs (fun rst ->
-                    '(' :: repr_l (')' :: '(' :: repr_r (')' :: rst)))
+                add_dot abs (fun rst ->
+                    lparen @ repr_l (rparen @ lparen @ repr_r (rparen @ rst)))
               in
               (false, true, rep)
             else
               let rep =
-                dot abs (fun rst -> '(' :: repr_l (')' :: repr_r rst))
+                add_dot abs (fun rst -> lparen @ repr_l (rparen @ repr_r rst))
               in
               (open_r, true, rep)
           else if app_r then
             let rep =
-              dot abs (fun rst -> repr_l ('(' :: repr_r (')' :: rst)))
+              add_dot abs (fun rst -> repr_l (lparen @ repr_r (rparen @ rst)))
             in
             (false, true, rep)
-          else (open_r, true, dot abs (fun rst -> repr_l (repr_r rst)))
+          else (open_r, true, add_dot abs (fun rst -> repr_l (repr_r rst)))
       | Abs (ident, e) ->
           let _, _, repr_in = dfs true (ident :: bvars) e in
+          let ident = if simple_ident ident then ident else "{" ^ ident ^ "}" in
+          let ident = fmt (List.length bvars + 1) ident in
           let rep =
             if abs then fun rst ->
               String.fold_right (fun c l -> c :: l) ident (repr_in rst)
             else fun rst ->
-              '\\' :: String.fold_right (fun c l -> c :: l) ident (repr_in rst)
+              lambda @ String.fold_right (fun c l -> c :: l) ident (repr_in rst)
           in
           (true, false, rep)
     in
     let _, _, rep = dfs false [] e in
     rep [] |> List.to_seq |> String.of_seq
+
+  let repr = repr_ex (fun _ -> Fun.id)
 end
 
 module type InterpType = sig
   val eval : (string * expr_t) list -> expr_t -> expr_t
-  val repl : unit -> unit
+  val fix_idents : expr_t -> expr_t
 end
 
 module Interp = struct
+  (* Rename conflicting bound variables *)
+  let fix_idents e =
+    let mk_new_ident ident =
+      let rec loop hd tl =
+        let curr = hd.[String.length hd - 1] in
+        let hd = String.sub hd 0 (String.length hd - 1) in
+        match curr with
+        | '0' .. '8' ->
+            let inc_curr = String.make 1 (char_of_int (1 + int_of_char curr)) in
+            hd ^ inc_curr ^ tl
+        | '9' -> loop hd ("0" ^ tl)
+        | curr -> hd ^ String.make 1 curr ^ "1" ^ tl
+      in
+      loop ident ""
+    in
+    let mk_good_ident min_depth sub_idents ident =
+      let is_bad ident =
+        List.exists
+          (fun (depth, sub_ident) -> sub_ident = ident && depth < min_depth)
+          sub_idents
+      in
+      let rec loop ident =
+        if is_bad ident then loop (mk_new_ident ident) else ident
+      in
+      loop ident
+    in
+    let rec dfs_get_idents bvars e =
+      match e with
+      | BVar idx -> [ (List.length bvars - idx, List.nth bvars idx) ]
+      | FVar ident -> [ (Int.min_int, ident) ]
+      | App (el, er) -> dfs_get_idents bvars el @ dfs_get_idents bvars er
+      | Abs (ident, e) -> dfs_get_idents (ident :: bvars) e
+    in
+    let rec dfs bvars e =
+      match e with
+      | BVar idx -> BVar idx
+      | FVar ident -> FVar ident
+      | App (el, er) -> App (dfs bvars el, dfs bvars er)
+      | Abs (ident, e) ->
+          let sub_idents = dfs_get_idents (ident :: bvars) e in
+          let min_depth = List.length bvars + 1 in
+          let ident = mk_good_ident min_depth sub_idents ident in
+          let e = dfs (ident :: bvars) e in
+          Abs (ident, e)
+    in
+    dfs [] e
+
   (* evaluate a lambda calculus expression *)
   let eval env e =
     let rec shiftr i e =
@@ -273,53 +332,5 @@ module Interp = struct
           | e -> Abs (ident, e))
     in
 
-    let fix_idents e =
-      let mk_new_ident ident =
-        let rec loop hd tl =
-          let curr = hd.[String.length hd - 1] in
-          let hd = String.sub hd 0 (String.length hd - 1) in
-          match curr with
-          | '0' .. '8' ->
-              let inc_curr =
-                String.make 1 (char_of_int (1 + int_of_char curr))
-              in
-              hd ^ inc_curr ^ tl
-          | '9' -> loop hd ("0" ^ tl)
-          | curr -> hd ^ String.make 1 curr ^ "1" ^ tl
-        in
-        loop ident ""
-      in
-      let mk_good_ident min_depth sub_idents ident =
-        let is_bad ident =
-          List.exists
-            (fun (depth, sub_ident) -> sub_ident = ident && depth < min_depth)
-            sub_idents
-        in
-        let rec loop ident =
-          if is_bad ident then loop (mk_new_ident ident) else ident
-        in
-        loop ident
-      in
-      let rec dfs_get_idents bvars e =
-        match e with
-        | BVar idx -> [ (List.length bvars - idx, List.nth bvars idx) ]
-        | FVar ident -> [ (Int.min_int, ident) ]
-        | App (el, er) -> dfs_get_idents bvars el @ dfs_get_idents bvars er
-        | Abs (ident, e) -> dfs_get_idents (ident :: bvars) e
-      in
-      let rec dfs bvars e =
-        match e with
-        | BVar idx -> BVar idx
-        | FVar ident -> FVar ident
-        | App (el, er) -> App (dfs bvars el, dfs bvars er)
-        | Abs (ident, e) ->
-            let sub_idents = dfs_get_idents (ident :: bvars) e in
-            let min_depth = List.length bvars + 1 in
-            let ident = mk_good_ident min_depth sub_idents ident in
-            let e = dfs (ident :: bvars) e in
-            Abs (ident, e)
-      in
-      dfs [] e
-    in
     e |> dfs |> fix_idents
 end
