@@ -9,7 +9,7 @@ let rec print_lines lines =
 let help_msg () =
   print_lines
     [
-      "  Help:";
+      "\x1b[37m  Help:";
       "  - Identifiers are [a-zA-Z][0-9]* or {[a-zA-Z0-9_]+}";
       "    E.g. \"a12\" \"{long_name}\", \"c\"";
       "    \"abc\" is three identifiers, not one";
@@ -31,7 +31,7 @@ let help_msg () =
       "      \\f.f\\y.y   ~/~>  \\y.y";
       "  - Certain expressions don't work";
       "      \\f.(\\x.f(xx))(\\x.f(xx))  ~~~> stack overflow";
-      "      (\\x.xx)(\\x.xx) ~~~> freezes";
+      "      (\\x.xx)(\\x.xx) ~~~> freezes\x1b[0m";
     ]
 
 let handle_expr env input =
@@ -40,10 +40,10 @@ let handle_expr env input =
       Readline.add_history input;
       let e' = Lambda_calc.Interp.eval env e in
       let str = Lambda_calc.Parse.repr e' in
-      print_endline ("  " ^ str);
+      print_endline ("\x1b[37m  " ^ str ^ "\x1b[0m");
       env
   | _ ->
-      print_endline "Parse Error";
+      print_endline "  \x1b[31mParse Error\x1b[0m";
       env
 
 let handle_stmt env input =
@@ -52,14 +52,14 @@ let handle_stmt env input =
       Readline.add_history input;
       let e' = Lambda_calc.Interp.eval env e in
       let str = Lambda_calc.Parse.repr e' in
-      print_endline ("  " ^ ident ^ "=" ^ str);
+      print_endline ("\x1b[37m  " ^ ident ^ "=" ^ str ^ "\x1b[0m");
       (ident, e') :: env
   | _ ->
-      print_endline "Parse Error";
+      print_endline "  \x1b[31mParse Error\x1b[0m";
       env
 
 let rec repl env =
-  let input = Readline.readline ~prompt:"<λ> " () in
+  let input = Readline.readline ~prompt:"\x1b[32m<λ>\x1b[0m " () in
   match input with
   | Some input -> (
       match input |> String.trim |> String.lowercase_ascii with
@@ -78,8 +78,8 @@ let rec repl env =
 ;;
 
 Readline.init ();
-print_endline "  ~~~~~ Lambda Calculus Interpreter ~~~~~";
+print_endline "\x1b[1;37m  ~~~~~ Lambda Calculus Interpreter ~~~~~";
 print_newline ();
-print_endline "     ('!quit' - leave, '!help' - help)";
+print_endline "     ('!quit' - leave, '!help' - help)\x1b[0m";
 print_newline ();
 repl []
