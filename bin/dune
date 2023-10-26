@@ -1,0 +1,4 @@
+(executable
+ (public_name repl)
+ (name main)
+ (libraries lambda_calc readline))
