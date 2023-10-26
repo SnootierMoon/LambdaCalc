@@ -1,5 +1,5 @@
 # LambdaCalc
-A lambda calculus interpreter in OCaml
+A call-by-value lambda calculus interpreter in OCaml
 
 Requires: ocaml 5.1, dune, readline
 

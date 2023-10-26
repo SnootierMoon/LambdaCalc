@@ -1,13 +1,29 @@
-type opts_t = { ansi : bool }
+type opts_t = { ansi : bool; max_depth: int; max_beta: int }
 
 let rec parse_args opts args =
   match args with
-  | "-ansi" :: args -> parse_args { ansi = true } args
+  | "-ansi" :: args -> parse_args { opts with ansi = true } args
   | "-help" :: _ ->
       print_endline "Usage:";
       print_endline "  -ansi  enable ansi colors";
       print_endline "  -help  show this help message";
+      print_endline "  -dN    set the max output depth to N, measured in abstractions";
+      print_endline "  -nN    set the max beta reductions per depth to N";
       exit 1
+  | arg :: args when String.starts_with ~prefix:"-d" arg ->
+      let ds = String.sub arg 2 (String.length arg - 2) in
+      (match int_of_string_opt ds with
+      | Some d -> parse_args { opts with max_depth = d } args
+      | None ->
+                      print_endline ("Invalid int: \"" ^ ds ^ "\".");
+                      exit 1)
+  | arg :: args when String.starts_with ~prefix:"-n" arg ->
+      let ns = String.sub arg 2 (String.length arg - 2) in
+      (match int_of_string_opt ns with
+      | Some n -> parse_args { opts with max_depth = n } args
+      | None ->
+                      print_endline ("Invalid int: \"" ^ ns ^ "\".");
+                      exit 1)
   | [] -> opts
   | arg :: _ ->
       print_endline
@@ -16,7 +32,7 @@ let rec parse_args opts args =
 
 let opts =
   let args = Sys.argv |> Array.to_seq |> Seq.drop 1 |> List.of_seq in
-  parse_args { ansi = false } args
+  parse_args { ansi = false; max_depth = 1000; max_beta = 1000; } args
 
 let rec print_lines lines =
   match lines with
@@ -79,25 +95,29 @@ let ansi_fmt i s =
       Printf.sprintf "\x1b[38;5;%dm%s\x1b[0m" color_num s
   | _ -> s
 
+type err_t = ParseError | EvalError
+
 let handle_expr env input =
   match Lambda_calc.Parse.expr input with
   | Some e ->
       Readline.add_history input;
-      let e' = Lambda_calc.Interp.eval env e in
+      (match Lambda_calc.Interp.eval ~max_depth:opts.max_depth ~max_beta:opts.max_beta env e with
+      | Some e' ->
       let str =
         Lambda_calc.Parse.(if opts.ansi then repr_ex ansi_fmt e' else repr e)
       in
       print_string "   ";
       print_endline str;
-      Some env
-  | None -> None
+      Ok env
+      | None -> Error EvalError)
+  | None -> Error ParseError
 
 let handle_stmt env input =
   match Lambda_calc.Parse.stmt input with
   | Some (ident, e) ->
       Readline.add_history input;
-      let e' = Lambda_calc.Interp.eval env e in
-      let str =
+      (match Lambda_calc.Interp.eval ~max_depth:opts.max_depth ~max_beta:opts.max_beta env e with
+      | Some e' -> let str =
         Lambda_calc.Parse.(if opts.ansi then repr_ex ansi_fmt e' else repr e)
       in
       print_string "   ";
@@ -106,8 +126,9 @@ let handle_stmt env input =
       if opts.ansi then print_string "\x1b[0m";
       print_char '=';
       print_endline str;
-      Some ((ident, e') :: env)
-  | None -> None
+      Ok ((ident, e') :: env)
+      | None -> Error EvalError)
+  | None -> Error ParseError
 
 let rec repl env =
   let input =
@@ -129,11 +150,18 @@ let rec repl env =
               else handle_expr env input
             in
             match res with
-            | Some env -> env
-            | None ->
+            | Ok env -> env
+            | Error ParseError ->
                 print_string "   ";
                 if opts.ansi then print_string "\x1b[31m";
                 print_string "Parse Error";
+                if opts.ansi then print_string "\x1b[0m";
+                print_newline ();
+                env
+            | Error EvalError ->
+                print_string "   ";
+                if opts.ansi then print_string "\x1b[31m";
+                print_string "Eval Error";
                 if opts.ansi then print_string "\x1b[0m";
                 print_newline ();
                 env

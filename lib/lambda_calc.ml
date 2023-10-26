@@ -230,7 +230,7 @@ module Parse : ParseType = struct
 end
 
 module type InterpType = sig
-  val eval : (string * expr_t) list -> expr_t -> expr_t
+  val eval : max_depth:int -> max_beta:int -> (string * expr_t) list -> expr_t -> expr_t
   val fix_idents : expr_t -> expr_t
 end
 
@@ -283,7 +283,7 @@ module Interp = struct
     dfs [] e
 
   (* evaluate a lambda calculus expression *)
-  let eval env e =
+  let eval ~max_depth ~max_beta env e =
     let rec shiftr i e =
       match e with
       | BVar idx when idx >= i -> BVar (idx + 1)
@@ -314,23 +314,28 @@ module Interp = struct
       | Abs (ident, e) -> (
           match shiftl i e with Some e -> Some (Abs (ident, e)) | None -> None)
     in
-    let rec dfs e =
+    let rec dfs d i e =
+      if d = max_depth || i = max_beta then
+        None
+      else
       match e with
-      | BVar idx -> BVar idx
+      | BVar idx -> Some (BVar idx)
       | FVar ident -> (
-          match List.assoc_opt ident env with Some e -> e | None -> FVar ident)
+          Some (match List.assoc_opt ident env with Some e -> e | None -> FVar ident))
       | App (el, er) -> (
-          match (dfs el, dfs er) with
-          | Abs (_, el), er -> dfs (subst 0 er el)
-          | el, er -> App (el, er))
+          match (dfs d i el, dfs d i er) with
+          | Some (Abs (_, el)), Some er -> dfs d (i + 1) (subst 0 er el)
+          | Some el, Some er -> Some (App (el, er))
+          | _, _ -> None)
       | Abs (ident, e) -> (
-          match dfs e with
-          | App (e, BVar 0) -> (
+          match dfs (d + 1) i e with
+          | Some (App (e, BVar 0)) -> (
               match shiftl 0 e with
-              | Some e -> e
-              | None -> Abs (ident, App (e, BVar 0)))
-          | e -> Abs (ident, e))
+              | Some e -> Some e
+              | None -> Some (Abs (ident, App (e, BVar 0))))
+          | Some e -> Some (Abs (ident, e))
+          | None -> None)
     in
 
-    e |> dfs |> fix_idents
+    e |> dfs 0 0 |> Option.map fix_idents
 end
