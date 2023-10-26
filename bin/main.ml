@@ -63,8 +63,8 @@ let help_msg () =
       "      <(\\f.f)\\y.y>    - <\\y.y>";
       "      <\\f.f\\y.y>      - <\\y.y>";
       "  - Certain expressions don't work";
-      "      <\\f.(\\x.f(xx))(\\x.f(xx))> - stack overflow";
-      "      <(\\x.xx)(\\x.xx)>          - freezes";
+      "      <\\f.(\\x.f(xx))(\\x.f(xx))>";
+      "      <(\\x.xx)(\\x.xx)>";
     ]
 
 let ansi_fmt i s =
