@@ -28,3 +28,7 @@ This screenshot above demonstrates:
 This program does not handle certain expressions, such as expressions that can
 be beta-reduced infinitely many times, like `(\x.xx)\x.xx` and
 `\f.(\x.f(xx))\x.f(xx)`.
+
+# Todo
+
+ * Rewrite evaluator with call-by-name semantics
