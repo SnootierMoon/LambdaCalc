@@ -180,7 +180,7 @@ module Parse : ParseType = struct
     let rec dfs abs bvars e =
       match e with
       | BVar idx ->
-          let ident = List.nth bvars idx in
+          let ident = match List.nth_opt bvars idx with Some s -> s | None -> "?" in
           let ident = if simple_ident ident then ident else "{" ^ ident ^ "}" in
           let ident = fmt (List.length bvars - idx) ident in
           let rep = add_dot abs (String.fold_right (fun c l -> c :: l) ident) in
@@ -222,6 +222,7 @@ module Parse : ParseType = struct
               lambda @ String.fold_right (fun c l -> c :: l) ident (repr_in rst)
           in
           (true, false, rep)
+        
     in
     let _, _, rep = dfs false [] e in
     rep [] |> List.to_seq |> String.of_seq
@@ -232,6 +233,7 @@ end
 module type InterpType = sig
   val eval : max_depth:int -> max_beta:int -> (string * expr_t) list -> expr_t -> expr_t
   val fix_idents : expr_t -> expr_t
+  val eq: expr_t -> expr_t -> bool
 end
 
 module Interp = struct
@@ -315,27 +317,32 @@ module Interp = struct
           match shiftl i e with Some e -> Some (Abs (ident, e)) | None -> None)
     in
     let rec dfs d i e =
-      if d = max_depth || i = max_beta then
-        None
+      if d >= max_depth || i >= max_beta then
+        e
       else
       match e with
-      | BVar idx -> Some (BVar idx)
+      | BVar idx -> BVar idx
       | FVar ident -> (
-          Some (match List.assoc_opt ident env with Some e -> e | None -> FVar ident))
+          match List.assoc_opt ident env with Some e -> e | None -> FVar ident)
       | App (el, er) -> (
-          match (dfs d i el, dfs d i er) with
-          | Some (Abs (_, el)), Some er -> dfs d (i + 1) (subst 0 er el)
-          | Some el, Some er -> Some (App (el, er))
-          | _, _ -> None)
+          match (dfs (d + 1) i el, dfs (d + 1) i er) with
+          | Abs (_, el), er -> dfs d (i + 1) (subst 0 er el)
+          | el, er -> App (el, er))
       | Abs (ident, e) -> (
-          match dfs (d + 1) i e with
-          | Some (App (e, BVar 0)) -> (
+          match dfs (d + 1) 0 e with
+          | App (e, BVar 0) -> (
               match shiftl 0 e with
-              | Some e -> Some e
-              | None -> Some (Abs (ident, App (e, BVar 0))))
-          | Some e -> Some (Abs (ident, e))
-          | None -> None)
+              | Some e -> e
+              | None -> Abs (ident, App (e, BVar 0)))
+          | e -> Abs (ident, e))
     in
+    e |> dfs 0 0 |> fix_idents
 
-    e |> dfs 0 0 |> Option.map fix_idents
+  let rec eq e1 e2 =
+     match e1, e2 with
+     | BVar idx1, BVar idx2 -> idx1 = idx2
+     | FVar ident1, FVar ident2 -> ident1 = ident2
+     | App (el1, er1), App (el2, er2) -> eq el1 el2 && eq er1 er2 
+     | Abs (_, e1), Abs (_, e2) -> eq e1 e2
+     | _ -> false
 end

@@ -20,7 +20,7 @@ let rec parse_args opts args =
   | arg :: args when String.starts_with ~prefix:"-n" arg ->
       let ns = String.sub arg 2 (String.length arg - 2) in
       (match int_of_string_opt ns with
-      | Some n -> parse_args { opts with max_depth = n } args
+      | Some n -> parse_args { opts with max_beta = n } args
       | None ->
                       print_endline ("Invalid int: \"" ^ ns ^ "\".");
                       exit 1)
@@ -95,29 +95,35 @@ let ansi_fmt i s =
       Printf.sprintf "\x1b[38;5;%dm%s\x1b[0m" color_num s
   | _ -> s
 
-type err_t = ParseError | EvalError
-
 let handle_expr env input =
   match Lambda_calc.Parse.expr input with
   | Some e ->
       Readline.add_history input;
-      (match Lambda_calc.Interp.eval ~max_depth:opts.max_depth ~max_beta:opts.max_beta env e with
-      | Some e' ->
+      let e' = Lambda_calc.Interp.eval ~max_depth:opts.max_depth ~max_beta:opts.max_beta env e in
       let str =
         Lambda_calc.Parse.(if opts.ansi then repr_ex ansi_fmt e' else repr e)
       in
       print_string "   ";
       print_endline str;
-      Ok env
-      | None -> Error EvalError)
-  | None -> Error ParseError
+      (match
+        env
+           |> List.filter_map (function (ident, ex) when Lambda_calc.Interp.eq e' ex -> Some ident | _ -> None)
+           |> List.map (fun ident -> "\x1b[37;1m" ^ ident ^ "\x1b[0m")
+      with
+      | [] -> ()
+      | names -> 
+            print_string "   ";
+        print_endline (String.concat ", " names);
+      );
+      Some env
+  | None -> None
 
 let handle_stmt env input =
   match Lambda_calc.Parse.stmt input with
   | Some (ident, e) ->
       Readline.add_history input;
-      (match Lambda_calc.Interp.eval ~max_depth:opts.max_depth ~max_beta:opts.max_beta env e with
-      | Some e' -> let str =
+      let e' = Lambda_calc.Interp.eval ~max_depth:opts.max_depth ~max_beta:opts.max_beta env e in
+      let str =
         Lambda_calc.Parse.(if opts.ansi then repr_ex ansi_fmt e' else repr e)
       in
       print_string "   ";
@@ -126,9 +132,8 @@ let handle_stmt env input =
       if opts.ansi then print_string "\x1b[0m";
       print_char '=';
       print_endline str;
-      Ok ((ident, e') :: env)
-      | None -> Error EvalError)
-  | None -> Error ParseError
+      Some ((ident, e') :: env)
+  | None -> None
 
 let rec repl env =
   let input =
@@ -150,18 +155,11 @@ let rec repl env =
               else handle_expr env input
             in
             match res with
-            | Ok env -> env
-            | Error ParseError ->
+            | Some env -> env
+            | None ->
                 print_string "   ";
                 if opts.ansi then print_string "\x1b[31m";
                 print_string "Parse Error";
-                if opts.ansi then print_string "\x1b[0m";
-                print_newline ();
-                env
-            | Error EvalError ->
-                print_string "   ";
-                if opts.ansi then print_string "\x1b[31m";
-                print_string "Eval Error";
                 if opts.ansi then print_string "\x1b[0m";
                 print_newline ();
                 env
