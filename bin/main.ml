@@ -40,10 +40,10 @@ let handle_expr env input =
       Readline.add_history input;
       let e' = Lambda_calc.Interp.eval env e in
       let str = Lambda_calc.Parse.repr e' in
-      print_endline ("\x1b[37m  " ^ str ^ "\x1b[0m");
+      print_endline ("   \x1b[37m" ^ str ^ "\x1b[0m");
       env
   | _ ->
-      print_endline "  \x1b[31mParse Error\x1b[0m";
+      print_endline "   \x1b[31mParse Error\x1b[0m";
       env
 
 let handle_stmt env input =
@@ -52,14 +52,14 @@ let handle_stmt env input =
       Readline.add_history input;
       let e' = Lambda_calc.Interp.eval env e in
       let str = Lambda_calc.Parse.repr e' in
-      print_endline ("\x1b[37m  " ^ ident ^ "=" ^ str ^ "\x1b[0m");
+      print_endline ("   \x1b[37m" ^ ident ^ "=" ^ str ^ "\x1b[0m");
       (ident, e') :: env
   | _ ->
-      print_endline "  \x1b[31mParse Error\x1b[0m";
+      print_endline "   \x1b[31mParse Error\x1b[0m";
       env
 
 let rec repl env =
-  let input = Readline.readline ~prompt:"\x1b[32m<λ>\x1b[0m " () in
+  let input = Readline.readline ~prompt:" \x1b[32m<λ>\x1b[0m " () in
   match input with
   | Some input -> (
       match input |> String.trim |> String.lowercase_ascii with

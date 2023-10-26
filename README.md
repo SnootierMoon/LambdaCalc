@@ -15,8 +15,7 @@ This screenshot above demonstrates:
  * the successor, add, and multiply operations, written in functional style,
  * the S and K combinators,
  * the add function expressed with S and K combinators, demonstrating
-   alpha-conversion to resolve conflicting bound identifiers,
- * expressions that are not well-formed, which yield a parse exception.
+   alpha-conversion to resolve conflicting bound identifiers.
 
 This program does not handle certain expressions, such as expressions that can
 be beta-reduced infinitely many times, like `(\x.xx)\x.xx` and
