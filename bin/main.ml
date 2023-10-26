@@ -104,6 +104,7 @@ let handle_stmt env input =
       if opts.ansi then print_string "\x1b[37m";
       print_string ident;
       if opts.ansi then print_string "\x1b[0m";
+      print_char '=';
       print_endline str;
       Some ((ident, e') :: env)
   | None -> None
