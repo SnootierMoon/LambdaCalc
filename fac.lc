@@ -1,0 +1,17 @@
+{true}xy = x
+{false}xy = y
+
+{0} = \fx.x
+{1} = \fx.fx
+{2} = \fx.f(fx)
+{3} = \fx.f(f(fx))
+{4} = \fx.f(f(f(fx)))
+
+{succ}n = \fx.f(nfx)
+{pred}n = \fx.n(\gh.h(gf))(\u.x)\u.u
+{add}mn = \fx.mf(nfx)
+{mul}mn = \fx.m(nf)x
+{isZero}n = n(\x.{false}){true}
+*Yf = (\x.xx)(\x.f(xx))
+*{fact} = Y(\fn. ({isZero}n){1}({mul}n(f({pred}n))))
+

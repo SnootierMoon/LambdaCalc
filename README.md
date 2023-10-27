@@ -3,10 +3,14 @@ A call-by-name lambda calculus interpreter in OCaml
 
 Run with `ocaml lcalc.ml`.
 
-For readline support, install `rlwrap` or something similar, and do `rlwrap
+For readline support, install `rlwrap` or something similar, and run `rlwrap
 ocaml lcalc.ml`.
 
-For ANSI colors, do `ocaml lcalc.ml -ansi` or `rlwrap -A ocaml lcalc.ml -ansi`.
+For ANSI colors, run `ocaml lcalc.ml -ansi` or `rlwrap -A ocaml lcalc.ml
+-ansi`.
+
+You can run `ocaml lcalc.ml -xfac.lc -xcomb.lc -ansi` to start off with a few
+common functions. Enter `!` to see what functions you have.
 
 The call-by-value evaluator is based on
 [this][https://www.cl.cam.ac.uk/~lp15/MLbook/PDF/chapter9.pdf].

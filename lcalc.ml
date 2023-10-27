@@ -1,3 +1,7 @@
+module Util = struct
+  let suffix n str = String.sub str n (String.length str - n)
+end
+
 type expr_t =
   (* bound variable, identified by De Brujin index *)
   | BVar of int
@@ -190,7 +194,7 @@ module Parse = struct
         | 'a' .. 'z' | 'A' .. 'Z' ->
             String.for_all
               (function '0' .. '9' -> true | _ -> false)
-              (String.sub ident 1 (String.length ident - 1))
+              (Util.suffix 1 ident)
         | _ -> false
       then ident
       else "{" ^ ident ^ "}"
@@ -257,9 +261,7 @@ module Interp : InterpSig = struct
     let mk_new ident =
       let rec loop left_part right_part =
         let curr = left_part.[String.length left_part - 1] in
-        let new_left_part =
-          String.sub left_part 1 (String.length left_part - 1)
-        in
+        let new_left_part = Util.suffix 1 left_part in
         match curr with
         | '0' .. '8' ->
             let inc_curr = String.make 1 (char_of_int (1 + int_of_char curr)) in
@@ -301,21 +303,18 @@ module Interp : InterpSig = struct
     dfs [] expr
 
   let eval env expr =
-    let find ident =
-      match List.assoc_opt ident env with Some e -> e | None -> FVar ident
-    in
-    let rec shiftl i e =
-      match e with
-      | BVar idx when idx > i -> Some (BVar (idx - 1))
-      | BVar idx when idx = i -> None
+    let rec shiftl d expr =
+      match expr with
+      | BVar idx when idx > d -> Some (BVar (idx - 1))
+      | BVar idx when idx = d -> None
       | BVar idx -> Some (BVar idx)
       | FVar ident -> Some (FVar ident)
       | App (l_expr, r_expr) -> (
-          match (shiftl i l_expr, shiftl i r_expr) with
+          match (shiftl d l_expr, shiftl d r_expr) with
           | Some l_expr, Some r_expr -> Some (App (l_expr, r_expr))
           | _, _ -> None)
       | Abs (ident, expr) -> (
-          match shiftl i expr with
+          match shiftl d expr with
           | Some expr -> Some (Abs (ident, expr))
           | None -> None)
     in
@@ -341,37 +340,44 @@ module Interp : InterpSig = struct
     let rec head_nf expr =
       match expr with
       | BVar idx -> BVar idx
-      | FVar ident -> find ident
+      | FVar ident -> (
+          match List.assoc_opt ident env with
+          | Some expr -> head_nf expr
+          | None -> FVar ident)
       | App (l_expr, r_expr) -> (
           match head_nf l_expr with
           | Abs (ident, expr) -> head_nf (subst 0 r_expr expr)
           | expr -> App (expr, r_expr))
       | Abs (ident, expr) -> Abs (ident, head_nf expr)
-    in
-    let rec beta_reduce expr = args (head_nf expr)
+    and by_name expr = args (head_nf expr)
     and args expr =
       match expr with
       | BVar idx -> BVar idx
-      | FVar ident -> find ident
-      | App (l_expr, r_expr) -> App (args l_expr, beta_reduce r_expr)
+      | FVar ident -> (
+          match List.assoc_opt ident env with
+          | Some expr -> args expr
+          | None -> FVar ident)
+      | App (l_expr, r_expr) -> App (args l_expr, by_name r_expr)
       | Abs (ident, expr) -> Abs (ident, args expr)
     in
     let rec eta_reduce expr =
       match expr with
       | BVar idx -> BVar idx
       | FVar ident -> FVar ident
-      | App (l_expr, r_expr) -> App (l_expr, r_expr)
+      | App (l_expr, r_expr) -> App (eta_reduce l_expr, eta_reduce r_expr)
       | Abs (ident, App (expr, BVar 0)) -> (
           match shiftl 0 expr with
           | Some expr -> eta_reduce expr
-          | None -> Abs (ident, App (expr, BVar 0)))
-      | Abs (ident, expr) -> Abs (ident, expr)
+          | None -> Abs (ident, App (eta_reduce expr, BVar 0)))
+      | Abs (ident, expr) -> Abs (ident, eta_reduce expr)
     in
-    expr |> beta_reduce |> eta_reduce
+    expr |> by_name |> eta_reduce
 end
 
 module Main = struct
-  type opts_t = { ansi : bool; max_depth : int; max_beta : int }
+  type opts_t = { ansi : bool }
+
+  exception Interrupt
 
   let ansi_fmt fmt =
     match fmt with
@@ -383,8 +389,8 @@ module Main = struct
     | BVarF (depth, ident) ->
         let color_num =
           List.nth
-            [ 176; 140; 104; 110; 116; 115; 114; 150; 186; 180; 174; 175 ]
-            ((depth - 1) mod 12)
+            [ 175; 176; 140; 104; 110; 116; 115; 114; 150; 186; 180; 174 ]
+            (depth mod 12)
         in
         Printf.sprintf "\x1b[38;5;%dm%s\x1b[0m" color_num ident
 
@@ -440,96 +446,141 @@ module Main = struct
         "    of a command, which disables evaluation:";
         "    [Ex]";
         "      <*Yf=(\\x.f(xx))\\x.f(xx)>";
+        "  - Commands:";
+        "    <\"!\">     - show environment";
+        "    <\"!help\"> - show this help message";
+        "    <\"!quit\"> - leave the session";
       ]
+
+  let print_env opts env =
+    let _, uniq =
+      List.fold_left
+        (fun (idents, env) (ident, expr) ->
+          if List.mem ident idents then (idents, env)
+          else (ident :: idents, (ident, expr) :: env))
+        ([], []) env
+    in
+    List.fold_left
+      (fun env (ident, expr) ->
+        let str = Parse.(if opts.ansi then repr_ex ansi_fmt else repr) expr in
+        print_string "   ";
+        if opts.ansi then print_string "\x1b[37;1m";
+        print_string ident;
+        if opts.ansi then print_string "\x1b[0m";
+        print_char '=';
+        print_endline str;
+        (ident, expr) :: env)
+      [] uniq
 
   let rec repl opts env =
     let prompt = if opts.ansi then " \x1b[32m<λ>\x1b[0m " else " <λ> " in
     print_string prompt;
-    let input = read_line () in
-    match input |> String.trim |> String.lowercase_ascii with
-    | "!quit" -> ()
-    | "!help" ->
-        help_msg opts;
+    try
+      let input = read_line () in
+      match input |> String.trim |> String.lowercase_ascii with
+      | "!quit" -> ()
+      | "!help" ->
+          help_msg opts;
+          repl opts env
+      | "!" -> repl opts (print_env opts env)
+      | cmd when String.starts_with ~prefix:"!" cmd ->
+          Printf.printf "Invalid command: \"%s\"" (Util.suffix 1 cmd);
+          print_newline ();
+          repl opts env
+      | "" -> repl opts env
+      | _ -> (
+          match
+            let input, eval =
+              if input.[0] = '*' then (Util.suffix 1 input, false)
+              else (input, true)
+            in
+            if String.contains input '=' then
+              match Parse.stmt input with
+              | Some (ident, expr) ->
+                  let expr = if eval then Interp.eval env expr else expr in
+                  let str =
+                    Parse.(if opts.ansi then repr_ex ansi_fmt else repr) expr
+                  in
+                  print_string "   ";
+                  if opts.ansi then print_string "\x1b[37;1m";
+                  print_string ident;
+                  if opts.ansi then print_string "\x1b[0m";
+                  print_char '=';
+                  print_endline str;
+                  Some ((ident, expr) :: env)
+              | None -> None
+            else
+              match Parse.expr input with
+              | Some expr ->
+                  let expr = if eval then Interp.eval env expr else expr in
+                  let str =
+                    Parse.(if opts.ansi then repr_ex ansi_fmt else repr) expr
+                  in
+                  print_string "   ";
+                  print_endline str;
+                  Some env
+              | None -> None
+          with
+          | Some env -> repl opts env
+          | None ->
+              print_string "   ";
+              if opts.ansi then print_string "\x1b[31m";
+              print_string "Parse Error";
+              if opts.ansi then print_string "\x1b[0m";
+              print_newline ();
+              repl opts env)
+    with
+    | End_of_file -> print_newline ()
+    | Interrupt ->
+        print_newline ();
         repl opts env
-    | "" -> repl opts env
-    | _ -> (
-        match
-          let input, eval =
-            if input.[0] = '*' then
-              (String.sub input 1 (String.length input - 1), false)
-            else (input, true)
-          in
-          if String.contains input '=' then
-            match Parse.stmt input with
-            | Some (ident, expr) ->
-                let expr = if eval then Interp.eval env expr else expr in
-                let str =
-                  Parse.(if opts.ansi then repr_ex ansi_fmt else repr) expr
-                in
-                print_string "   ";
-                if opts.ansi then print_string "\x1b[37m";
-                print_string ident;
-                if opts.ansi then print_string "\x1b[0m";
-                print_char '=';
-                print_endline str;
-                Some ((ident, expr) :: env)
-            | None -> None
-          else
-            match Parse.expr input with
-            | Some expr ->
-                let expr = if eval then Interp.eval env expr else expr in
-                let str =
-                  Parse.(if opts.ansi then repr_ex ansi_fmt else repr) expr
-                in
-                print_string "   ";
-                print_endline str;
-                Some env
-            | None -> None
-        with
-        | Some env -> repl opts env
-        | None ->
-            print_string "   ";
-            if opts.ansi then print_string "\x1b[31m";
-            print_string "Parse Error";
-            if opts.ansi then print_string "\x1b[0m";
-            print_newline ();
-            repl opts env)
 
-  let rec parse_args opts args =
+  let read_file filename env =
+    let rec read_lines i env channel =
+      try
+        let line = input_line channel |> String.trim in
+        if line = "" then read_lines (i + 1) env channel
+        else
+          let line, eval =
+            if line.[0] = '*' then (Util.suffix 1 line, false) else (line, true)
+          in
+          match Parse.stmt line with
+          | Some (ident, expr) ->
+              let expr = if eval then Interp.eval env expr else expr in
+              read_lines (i + 1) ((ident, expr) :: env) channel
+          | None ->
+              Printf.printf "File \"%s\", line %d: Parse Error" filename i;
+              print_newline ();
+              exit 1
+      with End_of_file -> env
+    in
+    let fs = open_in filename in
+    let env = read_lines 1 env fs in
+    close_in fs;
+    env
+
+  let rec parse_args env opts args =
     match args with
-    | "-ansi" :: args -> parse_args { opts with ansi = true } args
+    | "-ansi" :: args -> parse_args env { ansi = true } args
     | "-help" :: _ ->
         print_endline "Usage:";
-        print_endline "  -ansi  enable ansi colors";
-        print_endline "  -help  show this help message";
-        print_endline
-          "  -dN    set the max output depth to N, measured in abstractions";
-        print_endline "  -nN    set the max beta reductions per depth to N";
+        print_endline "  -ansi     enable ansi colors";
+        print_endline "  -help     show this help message";
+        print_endline "  -x[file]  exec LC statements in file";
         exit 1
-    | arg :: args when String.starts_with ~prefix:"-d" arg -> (
-        let ds = String.sub arg 2 (String.length arg - 2) in
-        match int_of_string_opt ds with
-        | Some d -> parse_args { opts with max_depth = d } args
-        | None ->
-            print_endline ("Invalid int: \"" ^ ds ^ "\".");
-            exit 1)
-    | arg :: args when String.starts_with ~prefix:"-n" arg -> (
-        let ns = String.sub arg 2 (String.length arg - 2) in
-        match int_of_string_opt ns with
-        | Some n -> parse_args { opts with max_beta = n } args
-        | None ->
-            print_endline ("Invalid int: \"" ^ ns ^ "\".");
-            exit 1)
-    | [] -> opts
+    | arg :: args when String.starts_with ~prefix:"-x" arg ->
+        parse_args (read_file (Util.suffix 2 arg) env) opts args
+    | [] -> (env, opts)
     | arg :: _ ->
         print_endline
           ("Invalid arg: \"" ^ arg ^ "\". Use \"-help\" for usage info.");
         exit 1
 
   let main () =
-    let opts =
+    Sys.set_signal Sys.sigint (Sys.Signal_handle (fun x -> raise Interrupt));
+    let env, opts =
       let args = Sys.argv |> Array.to_seq |> Seq.drop 1 |> List.of_seq in
-      parse_args { ansi = false; max_depth = 1000; max_beta = 1000 } args
+      parse_args [] { ansi = false } args
     in
     if opts.ansi then print_string "\x1b[1m";
     print_endline "  ~~~~~ Lambda Calculus Interpreter ~~~~~";
@@ -537,7 +588,7 @@ module Main = struct
     print_endline "     ('!quit' - leave, '!help' - help)";
     if opts.ansi then print_string "\x1b[0m";
     print_newline ();
-    repl opts []
+    repl opts env
 end
 ;;
 
