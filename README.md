@@ -25,7 +25,7 @@ This screenshot above demonstrates:
  * the successor, add, and multiply operations, written in functional style,
  * the S and K combinators,
  * the add function expressed with S and K combinators, demonstrating
-   alpha-conversion to prevent captured variables.
+   alpha-conversion to prevent capture of variables.
 
 # TODO
 
