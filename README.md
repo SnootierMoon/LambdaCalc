@@ -13,7 +13,7 @@ You can run `ocaml lcalc.ml -xfac.lc -xcomb.lc -ansi` to start off with a few
 common functions. Enter `!` to see what functions you have.
 
 The call-by-value evaluator is based on
-[this][https://www.cl.cam.ac.uk/~lp15/MLbook/PDF/chapter9.pdf].
+[this](https://www.cl.cam.ac.uk/~lp15/MLbook/PDF/chapter9.pdf).
 
 # Screenshots
 
