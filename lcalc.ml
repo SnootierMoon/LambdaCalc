@@ -15,6 +15,25 @@ type expr_t =
 type fmt_punct_t = LParen | RParen | Lambda | Dot
 type fmt_t = PunctF of fmt_punct_t | BVarF of int * string | FVarF of string
 
+let rec dump expr =
+  match expr with
+  | BVar i ->
+      print_string "BVar ";
+      print_int i
+  | FVar s ->
+      print_string "FVar ";
+      print_string s
+  | App (e1, e2) ->
+      print_string "App (";
+      dump e1;
+      print_string ") (";
+      dump e2;
+      print_string ")"
+  | Abs (i, e) ->
+      print_string "Abs ";
+      print_string i;
+      dump e
+
 (*
 
 EBNF for Lambda Calculus:
@@ -303,32 +322,17 @@ module Interp : InterpSig = struct
     dfs [] expr
 
   let eval env expr =
-    let rec shiftl d expr =
-      match expr with
-      | BVar idx when idx > d -> Some (BVar (idx - 1))
-      | BVar idx when idx = d -> None
-      | BVar idx -> Some (BVar idx)
-      | FVar ident -> Some (FVar ident)
-      | App (l_expr, r_expr) -> (
-          match (shiftl d l_expr, shiftl d r_expr) with
-          | Some l_expr, Some r_expr -> Some (App (l_expr, r_expr))
-          | _, _ -> None)
-      | Abs (ident, expr) -> (
-          match shiftl d expr with
-          | Some expr -> Some (Abs (ident, expr))
-          | None -> None)
-    in
-    let rec shift i d u =
-      if i = 0 then u
-      else
-        match u with
-        | BVar idx when idx >= d -> BVar (idx + i)
-        | BVar idx -> BVar idx
-        | FVar ident -> FVar ident
-        | App (l_expr, r_expr) -> App (shift i d l_expr, shift i d r_expr)
-        | Abs (ident, expr) -> Abs (ident, shift i (d + 1) expr)
-    in
     let rec subst d u expr =
+      let rec shift i d u =
+        if i = 0 then u
+        else
+          match u with
+          | BVar idx when idx >= d -> BVar (idx + i)
+          | BVar idx -> BVar idx
+          | FVar ident -> FVar ident
+          | App (l_expr, r_expr) -> App (shift i d l_expr, shift i d r_expr)
+          | Abs (ident, expr) -> Abs (ident, shift i (d + 1) expr)
+      in
       match expr with
       | BVar idx when idx < d -> BVar idx
       | BVar idx when idx = d -> shift d 0 u
@@ -337,13 +341,26 @@ module Interp : InterpSig = struct
       | App (l_expr, r_expr) -> App (subst d u l_expr, subst d u r_expr)
       | Abs (ident, expr) -> Abs (ident, subst (d + 1) u expr)
     in
+    let rec fix_fvars env expr =
+      let rec find_fvar env ident =
+        match env with
+        | (env_ident, expr) :: env when env_ident = ident -> Some (expr, env)
+        | _ :: env -> find_fvar env ident
+        | [] -> None
+      in
+      match expr with
+      | BVar idx -> BVar idx
+      | FVar ident ->
+          Option.fold (find_fvar env ident)
+            ~some:(fun (expr, env) -> fix_fvars env expr)
+            ~none:(FVar ident)
+      | App (l_expr, r_expr) -> App (fix_fvars env l_expr, fix_fvars env r_expr)
+      | Abs (ident, expr) -> Abs (ident, fix_fvars env expr)
+    in
     let rec head_nf expr =
       match expr with
       | BVar idx -> BVar idx
-      | FVar ident -> (
-          match List.assoc_opt ident env with
-          | Some expr -> head_nf expr
-          | None -> FVar ident)
+      | FVar ident -> FVar ident
       | App (l_expr, r_expr) -> (
           match head_nf l_expr with
           | Abs (ident, expr) -> head_nf (subst 0 r_expr expr)
@@ -353,14 +370,26 @@ module Interp : InterpSig = struct
     and args expr =
       match expr with
       | BVar idx -> BVar idx
-      | FVar ident -> (
-          match List.assoc_opt ident env with
-          | Some expr -> args expr
-          | None -> FVar ident)
+      | FVar ident -> FVar ident
       | App (l_expr, r_expr) -> App (args l_expr, by_name r_expr)
       | Abs (ident, expr) -> Abs (ident, args expr)
     in
     let rec eta_reduce expr =
+      let rec shiftl d expr =
+        match expr with
+        | BVar idx when idx > d -> Some (BVar (idx - 1))
+        | BVar idx when idx = d -> None
+        | BVar idx -> Some (BVar idx)
+        | FVar ident -> Some (FVar ident)
+        | App (l_expr, r_expr) -> (
+            match (shiftl d l_expr, shiftl d r_expr) with
+            | Some l_expr, Some r_expr -> Some (App (l_expr, r_expr))
+            | _, _ -> None)
+        | Abs (ident, expr) -> (
+            match shiftl d expr with
+            | Some expr -> Some (Abs (ident, expr))
+            | None -> None)
+      in
       match expr with
       | BVar idx -> BVar idx
       | FVar ident -> FVar ident
@@ -371,7 +400,7 @@ module Interp : InterpSig = struct
           | None -> Abs (ident, App (eta_reduce expr, BVar 0)))
       | Abs (ident, expr) -> Abs (ident, eta_reduce expr)
     in
-    expr |> by_name |> eta_reduce
+    expr |> fix_fvars env |> by_name |> eta_reduce
 end
 
 module Main = struct
@@ -461,16 +490,15 @@ module Main = struct
         ([], []) env
     in
     List.fold_left
-      (fun env (ident, expr) ->
+      (fun _ (ident, expr) ->
         let str = Parse.(if opts.ansi then repr_ex ansi_fmt else repr) expr in
         print_string "   ";
         if opts.ansi then print_string "\x1b[37;1m";
         print_string ident;
         if opts.ansi then print_string "\x1b[0m";
         print_char '=';
-        print_endline str;
-        (ident, expr) :: env)
-      [] uniq
+        print_endline str)
+      () uniq
 
   let rec repl opts env =
     let prompt = if opts.ansi then " \x1b[32m<λ>\x1b[0m " else " <λ> " in
@@ -482,7 +510,9 @@ module Main = struct
       | "!help" ->
           help_msg opts;
           repl opts env
-      | "!" -> repl opts (print_env opts env)
+      | "!" ->
+          print_env opts env;
+          repl opts env
       | cmd when String.starts_with ~prefix:"!" cmd ->
           Printf.printf "Invalid command: \"%s\"" (Util.suffix 1 cmd);
           print_newline ();
