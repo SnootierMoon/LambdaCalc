@@ -26,3 +26,12 @@ This screenshot above demonstrates:
  * the S and K combinators,
  * the add function expressed with S and K combinators, demonstrating
    alpha-conversion to prevent captured variables.
+
+# TODO
+
+ * The code is really messy, rewrite with better style & smarter ideas
+   - Make use of some monadic ideas for env-passing (abstract env logic in
+     general, especially for handling -num & -bool)
+   - Make heavy use of `Option.bind` and `Option.map`, maybe even creating
+     infix operators for them
+   - Goal is clarity by making the code more succinct and expressive

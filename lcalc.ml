@@ -15,25 +15,6 @@ type expr_t =
 type fmt_punct_t = LParen | RParen | Lambda | Dot
 type fmt_t = PunctF of fmt_punct_t | BVarF of int * string | FVarF of string
 
-let rec dump expr =
-  match expr with
-  | BVar i ->
-      print_string "BVar ";
-      print_int i
-  | FVar s ->
-      print_string "FVar ";
-      print_string s
-  | App (e1, e2) ->
-      print_string "App (";
-      dump e1;
-      print_string ") (";
-      dump e2;
-      print_string ")"
-  | Abs (i, e) ->
-      print_string "Abs ";
-      print_string i;
-      dump e
-
 (*
 
 EBNF for Lambda Calculus:
@@ -271,11 +252,17 @@ module Parse = struct
 end
 
 module type InterpSig = sig
+  type env_t = Env of (string -> (env_t * expr_t) option)
+
   val fix_idents : expr_t -> expr_t
-  val eval : (string * expr_t) list -> expr_t -> expr_t
+  val subst_fvars : env_t -> expr_t -> expr_t
+  val eval : expr_t -> expr_t
+  val eq : expr_t -> expr_t -> bool
 end
 
 module Interp : InterpSig = struct
+  type env_t = Env of (string -> (env_t * expr_t) option)
+
   let fix_idents expr =
     let mk_new ident =
       let rec loop left_part right_part =
@@ -321,7 +308,19 @@ module Interp : InterpSig = struct
     in
     dfs [] expr
 
-  let eval env expr =
+  let rec subst_fvars env expr =
+    match expr with
+    | BVar idx -> BVar idx
+    | FVar ident ->
+        let (Env env) = env in
+        Option.fold (env ident)
+          ~some:(fun (env, expr) -> subst_fvars env expr)
+          ~none:(FVar ident)
+    | App (l_expr, r_expr) ->
+        App (subst_fvars env l_expr, subst_fvars env r_expr)
+    | Abs (ident, expr) -> Abs (ident, subst_fvars env expr)
+
+  let eval expr =
     let rec subst d u expr =
       let rec shift i d u =
         if i = 0 then u
@@ -340,22 +339,6 @@ module Interp : InterpSig = struct
       | FVar ident -> FVar ident
       | App (l_expr, r_expr) -> App (subst d u l_expr, subst d u r_expr)
       | Abs (ident, expr) -> Abs (ident, subst (d + 1) u expr)
-    in
-    let rec fix_fvars env expr =
-      let rec find_fvar env ident =
-        match env with
-        | (env_ident, expr) :: env when env_ident = ident -> Some (expr, env)
-        | _ :: env -> find_fvar env ident
-        | [] -> None
-      in
-      match expr with
-      | BVar idx -> BVar idx
-      | FVar ident ->
-          Option.fold (find_fvar env ident)
-            ~some:(fun (expr, env) -> fix_fvars env expr)
-            ~none:(FVar ident)
-      | App (l_expr, r_expr) -> App (fix_fvars env l_expr, fix_fvars env r_expr)
-      | Abs (ident, expr) -> Abs (ident, fix_fvars env expr)
     in
     let rec head_nf expr =
       match expr with
@@ -400,11 +383,20 @@ module Interp : InterpSig = struct
           | None -> Abs (ident, App (eta_reduce expr, BVar 0)))
       | Abs (ident, expr) -> Abs (ident, eta_reduce expr)
     in
-    expr |> fix_fvars env |> by_name |> eta_reduce
+    expr |> by_name |> eta_reduce
+
+  let rec eq expr1 expr2 =
+    match (expr1, expr2) with
+    | BVar idx1, BVar idx2 -> idx1 = idx2
+    | FVar ident1, FVar ident2 -> ident1 = ident2
+    | App (l_expr1, r_expr1), App (l_expr2, r_expr2) ->
+        eq l_expr1 l_expr2 && eq r_expr1 r_expr2
+    | Abs (_, expr1), Abs (_, expr2) -> eq expr1 expr2
+    | _ -> false
 end
 
 module Main = struct
-  type opts_t = { ansi : bool }
+  type opts_t = { ansi : bool; church_num : bool; church_bool : bool }
 
   exception Interrupt
 
@@ -481,24 +473,101 @@ module Main = struct
         "    <\"!quit\"> - leave the session";
       ]
 
-  let print_env opts env =
-    let _, uniq =
+  let church_bools =
+    [
+      ("not", Abs ("x", App (App (BVar 0, FVar "false"), FVar "true")));
+      ("and", Abs ("x", Abs ("y", App (App (BVar 1, BVar 0), FVar "false"))));
+      ("or", Abs ("x", Abs ("y", App (App (BVar 1, FVar "true"), BVar 0))));
+      ("false", Abs ("x", Abs ("y", BVar 0)));
+      ("true", Abs ("x", Abs ("y", BVar 1)));
+    ]
+
+  let env_uniq opts env =
+    let _, env =
       List.fold_left
         (fun (idents, env) (ident, expr) ->
           if List.mem ident idents then (idents, env)
           else (ident :: idents, (ident, expr) :: env))
-        ([], []) env
+        (if opts.church_bool then
+           (List.map (fun (ident, _) -> ident) church_bools, church_bools)
+         else ([], []))
+        env
     in
-    List.fold_left
-      (fun _ (ident, expr) ->
-        let str = Parse.(if opts.ansi then repr_ex ansi_fmt else repr) expr in
-        print_string "   ";
-        if opts.ansi then print_string "\x1b[37;1m";
-        print_string ident;
-        if opts.ansi then print_string "\x1b[0m";
-        print_char '=';
-        print_endline str)
-      () uniq
+    env
+
+  let rec env_wrap opts env =
+    let church_num x =
+      let rec loop_app expr n =
+        if n < x then loop_app (App (BVar 1, expr)) (n + 1) else expr
+      in
+      Abs ("f", Abs ("x", loop_app (BVar 0) 0))
+    in
+    let rec loop env ident =
+      match env with
+      | (ident', expr) :: env when ident' = ident ->
+          Some (Interp.Env (loop env), expr)
+      | _ :: env -> loop env ident
+      | [] -> (
+          match
+            if opts.church_bool then List.assoc_opt ident church_bools else None
+          with
+          | Some expr -> Some (Interp.Env (fun ident -> None), expr)
+          | None -> (
+              match
+                if opts.church_num then
+                  ident |> int_of_string_opt |> Option.map church_num
+                else None
+              with
+              | Some expr -> Some (Interp.Env (fun ident -> None), expr)
+              | None -> None))
+    in
+
+    Interp.Env (loop env)
+
+  let is_church_num expr =
+    let rec loop expr i =
+      match expr with
+      | App (BVar 1, expr) -> loop expr (i + 1)
+      | BVar 0 -> Some (string_of_int i)
+      | _ -> None
+    in
+    match expr with
+    | Abs (_, Abs (_, expr)) -> loop expr 0
+    | Abs (_, BVar 0) -> Some "1"
+    | _ -> None
+
+  let print_names opts env expr =
+    let names =
+      env |> env_uniq opts
+      |> List.filter_map (fun (ident, expr') ->
+             if Interp.eq expr expr' then Some ident else None)
+      |> List.map
+           (if opts.ansi then fun ident -> "\x1b[37;1m" ^ ident ^ "\x1b[0m"
+            else Fun.id)
+      |> (if opts.church_num then fun names ->
+            match is_church_num expr with
+            | Some s when not (List.mem s names) -> s :: names
+            | _ -> names
+          else Fun.id)
+      |> String.concat ", "
+    in
+    if not (names = "") then (
+      print_string "   (";
+      print_string names;
+      print_endline ")")
+
+  let print_env opts env =
+    env |> env_uniq opts
+    |> List.iter (fun (ident, expr) ->
+           print_string "   ";
+           if opts.ansi then print_string "\x1b[37;1m";
+           print_string ident;
+           if opts.ansi then print_string "\x1b[0m";
+           print_char '=';
+           let body =
+             Parse.(if opts.ansi then repr_ex ansi_fmt else repr) expr
+           in
+           print_endline body)
 
   let rec repl opts env =
     let prompt = if opts.ansi then " \x1b[32m<λ>\x1b[0m " else " <λ> " in
@@ -527,7 +596,13 @@ module Main = struct
             if String.contains input '=' then
               match Parse.stmt input with
               | Some (ident, expr) ->
-                  let expr = if eval then Interp.eval env expr else expr in
+                  let expr =
+                    if eval then
+                      expr
+                      |> Interp.subst_fvars (env_wrap opts env)
+                      |> Interp.eval
+                    else expr
+                  in
                   let str =
                     Parse.(if opts.ansi then repr_ex ansi_fmt else repr) expr
                   in
@@ -542,12 +617,19 @@ module Main = struct
             else
               match Parse.expr input with
               | Some expr ->
-                  let expr = if eval then Interp.eval env expr else expr in
+                  let expr =
+                    if eval then
+                      expr
+                      |> Interp.subst_fvars (env_wrap opts env)
+                      |> Interp.eval
+                    else expr
+                  in
                   let str =
                     Parse.(if opts.ansi then repr_ex ansi_fmt else repr) expr
                   in
                   print_string "   ";
                   print_endline str;
+                  print_names opts env expr;
                   Some env
               | None -> None
           with
@@ -565,7 +647,7 @@ module Main = struct
         print_newline ();
         repl opts env
 
-  let read_file filename env =
+  let read_file opts env filename =
     let rec read_lines i env channel =
       try
         let line = input_line channel |> String.trim in
@@ -576,7 +658,11 @@ module Main = struct
           in
           match Parse.stmt line with
           | Some (ident, expr) ->
-              let expr = if eval then Interp.eval env expr else expr in
+              let expr =
+                if eval then
+                  expr |> Interp.subst_fvars (env_wrap opts env) |> Interp.eval
+                else expr
+              in
               read_lines (i + 1) ((ident, expr) :: env) channel
           | None ->
               Printf.printf "File \"%s\", line %d: Parse Error" filename i;
@@ -591,15 +677,19 @@ module Main = struct
 
   let rec parse_args env opts args =
     match args with
-    | "-ansi" :: args -> parse_args env { ansi = true } args
+    | "-ansi" :: args -> parse_args env { opts with ansi = true } args
     | "-help" :: _ ->
         print_endline "Usage:";
         print_endline "  -ansi     enable ansi colors";
         print_endline "  -help     show this help message";
-        print_endline "  -x[file]  exec LC statements in file";
+        print_endline "  -x[file]  include lambda calc statements from file";
+        print_endline "  -num      include church numerals";
+        print_endline "  -bool     include church booleans";
         exit 1
     | arg :: args when String.starts_with ~prefix:"-x" arg ->
-        parse_args (read_file (Util.suffix 2 arg) env) opts args
+        parse_args (read_file opts env (Util.suffix 2 arg)) opts args
+    | "-bool" :: args -> parse_args env { opts with church_bool = true } args
+    | "-num" :: args -> parse_args env { opts with church_num = true } args
     | [] -> (env, opts)
     | arg :: _ ->
         print_endline
@@ -610,7 +700,9 @@ module Main = struct
     Sys.set_signal Sys.sigint (Sys.Signal_handle (fun x -> raise Interrupt));
     let env, opts =
       let args = Sys.argv |> Array.to_seq |> Seq.drop 1 |> List.of_seq in
-      parse_args [] { ansi = false } args
+      parse_args []
+        { ansi = false; church_num = false; church_bool = false }
+        args
     in
     if opts.ansi then print_string "\x1b[1m";
     print_endline "  ~~~~~ Lambda Calculus Interpreter ~~~~~";
