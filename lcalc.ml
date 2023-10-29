@@ -1,25 +1,26 @@
 module StringMap = Map.Make (String)
+module IMap = Map.Make (Int)
 
 let suffix n str = String.sub str n (String.length str - n)
 
-type expr_t =
+type expr =
   | BoundVar of int
   | FreeVar of string
-  | Apply of expr_t * expr_t
-  | Abstract of string * expr_t
+  | Apply of expr * expr
+  | Abstract of string * expr
 
-type fmt_punct_t = LParen | RParen | Lambda | Dot
+type fmt_punct = LParen | RParen | Lambda | Dot
 
-type fmt_t =
-  | PunctFmt of fmt_punct_t
+type fmt =
+  | PunctFmt of fmt_punct
   | BoundVarFmt of int * string
   | FreeVarFmt of string
 
 module type ParseSig = sig
-  val expr : string -> (expr_t, int option) result
-  val stmt : string -> (string * expr_t, int option) result
-  val repr_ex : (fmt_t -> string) -> expr_t -> string
-  val repr : expr_t -> string
+  val expr : string -> (expr, int option) result
+  val stmt : string -> (string * expr, int option) result
+  val repr_ex : (fmt -> string) -> expr -> string
+  val repr : expr -> string
 end
 
 module Parse : ParseSig = struct
@@ -28,7 +29,7 @@ module Parse : ParseSig = struct
     match cis with (_, ' ') :: cis -> read_ws cis | cis -> cis
 
   (* option-parser for <ident> *)
-  let rec read_ident var_position cis =
+  let rec read_ident in_expr cis =
     let rec read_digits ident cis =
       match cis with
       | (_, ('0' .. '9' as c)) :: cis ->
@@ -45,8 +46,7 @@ module Parse : ParseSig = struct
     in
     match
       match cis with
-      | (_, '#') :: cis when var_position ->
-          read_digits (fun rst -> '#' :: rst) cis
+      | (_, '#') :: cis when in_expr -> read_digits (fun rst -> '#' :: rst) cis
       | (_, (('A' .. 'Z' | 'a' .. 'z') as c)) :: cis ->
           read_digits (fun rst -> c :: rst) cis
       | (_, '{')
@@ -93,11 +93,11 @@ module Parse : ParseSig = struct
       | (_, '.') :: cis when not fst -> Ok (params, depth, bvars, cis)
       | cis -> (
           match read_ident false cis with
-          | Ok (Some ident, cis) ->
+          | Ok (Some param_ident, cis) ->
               read_params false
-                (fun rst -> params (Abstract (ident, rst)))
+                (fun body -> params (Abstract (param_ident, body)))
                 (depth + 1)
-                (StringMap.add ident depth bvars)
+                (StringMap.add param_ident depth bvars)
                 cis
           | Ok (None, (i, _) :: _) -> Error (Some i)
           | Ok (None, []) -> Error None
@@ -147,11 +147,11 @@ module Parse : ParseSig = struct
       | (_, '=') :: cis -> Ok (params, depth, bvars, cis)
       | cis -> (
           match read_ident false cis with
-          | Ok (Some ident, cis) ->
+          | Ok (Some param_ident, cis) ->
               read_params
-                (fun rst -> params (Abstract (ident, rst)))
+                (fun body -> params (Abstract (param_ident, body)))
                 (depth + 1)
-                (StringMap.add ident depth bvars)
+                (StringMap.add param_ident depth bvars)
                 cis
           | Ok (None, cis) -> (
               match cis with (i, _) :: _ -> Error (Some i) | _ -> Error None)
@@ -187,19 +187,20 @@ module Parse : ParseSig = struct
         | (i, _) :: _ -> Error (Some i))
     | Error err -> Error err
 
+  let string_to_dlist = String.fold_right (fun c rst -> c :: rst)
+
+  let escape_ident ident =
+    if
+      match ident.[0] with
+      | 'a' .. 'z' | 'A' .. 'Z' ->
+          String.for_all
+            (function '0' .. '9' -> true | _ -> false)
+            (suffix 1 ident)
+      | _ -> false
+    then ident
+    else "{" ^ ident ^ "}"
+
   let repr_ex fmt expr =
-    let string_to_dlist = String.fold_right (fun c rst -> c :: rst) in
-    let escape_ident ident =
-      if
-        match ident.[0] with
-        | 'a' .. 'z' | 'A' .. 'Z' ->
-            String.for_all
-              (function '0' .. '9' -> true | _ -> false)
-              (suffix 1 ident)
-        | _ -> false
-      then ident
-      else "{" ^ ident ^ "}"
-    in
     let l_paren = fmt (PunctFmt LParen) |> String.to_seq |> List.of_seq in
     let r_paren = fmt (PunctFmt RParen) |> String.to_seq |> List.of_seq in
     let lambda = fmt (PunctFmt Lambda) |> String.to_seq |> List.of_seq in
@@ -258,4 +259,117 @@ module Parse : ParseSig = struct
       | BoundVarFmt (_, ident) | FreeVarFmt ident -> ident)
 end
 
-module Interp = struct end
+module Interp = struct
+  type susp_expr =
+    | SSuspVar of int
+    | SBoundVar of int
+    | SFreeVar of string
+    | SApply of (susp_expr * susp_expr)
+    | SAbstract of (string * susp_expr)
+
+  type susp_val =
+    | Susp of susp_expr
+    | HeadNf of susp_expr
+    | BetaNf of susp_expr
+
+  let rec lift expr =
+    match expr with
+    | BoundVar idx -> SBoundVar idx
+    | FreeVar ident -> SFreeVar ident
+    | Apply (l_expr, r_expr) -> SApply (lift l_expr, lift r_expr)
+    | Abstract (ident, expr) -> SAbstract (ident, lift expr)
+
+  let rec shift off depth expr =
+    if off = 0 then expr
+    else
+      match expr with
+      | SSuspVar key -> SSuspVar key
+      | SBoundVar idx when idx >= depth -> SBoundVar (idx + off)
+      | SBoundVar idx -> SBoundVar idx
+      | SFreeVar ident -> SFreeVar ident
+      | SApply (l_expr, r_expr) ->
+          SApply (shift off depth l_expr, shift off depth r_expr)
+      | SAbstract (ident, expr) -> SAbstract (ident, shift off (depth + 1) expr)
+
+  let rec subst depth key expr =
+    match expr with
+    | SSuspVar key -> SSuspVar key
+    | SBoundVar idx when idx < depth -> SBoundVar idx
+    | SBoundVar idx when idx = depth -> SSuspVar key
+    | SBoundVar idx -> SBoundVar (idx - 1)
+    | SFreeVar ident -> SFreeVar ident
+    | SApply (l_expr, r_expr) ->
+        SApply (subst depth key l_expr, subst depth key r_expr)
+    | SAbstract (ident, expr) -> SAbstract (ident, subst (depth + 1) key expr)
+
+  let rec eta_reduce expr =
+    let rec shiftl depth expr =
+      match expr with
+      | BoundVar idx when idx > depth -> Some (BoundVar (idx - 1))
+      | BoundVar idx when idx = depth -> None
+      | BoundVar idx -> Some (BoundVar idx)
+      | FreeVar ident -> Some (FreeVar ident)
+      | Apply (l_expr, r_expr) -> (
+          match (shiftl depth l_expr, shiftl depth r_expr) with
+          | Some l_expr, Some r_expr -> Some (Apply (l_expr, r_expr))
+          | _, _ -> None)
+      | Abstract (ident, expr) -> (
+          match shiftl (depth + 1) expr with
+          | Some expr -> Some (Abstract (ident, expr))
+          | None -> None)
+    in
+    match expr with
+    | BoundVar idx -> BoundVar idx
+    | FreeVar ident -> FreeVar ident
+    | Apply (l_expr, r_expr) -> Apply (eta_reduce l_expr, eta_reduce r_expr)
+    | Abstract (ident, Apply (expr, BoundVar 0)) -> (
+        match shiftl 0 expr with
+        | Some expr -> eta_reduce expr
+        | None -> Abstract (ident, Apply (eta_reduce expr, BoundVar 0)))
+    | Abstract (ident, expr) -> Abstract (ident, eta_reduce expr)
+
+  let eval expr =
+    let rec head_nf depth benv expr =
+      match expr with
+      | SSuspVar key -> (
+          match IMap.find key benv with
+          | depth', (HeadNf expr | BetaNf expr) ->
+              (benv, shift (depth - depth') 0 expr)
+          | depth', Susp expr ->
+              let benv, expr = head_nf depth' benv expr in
+              ( IMap.add key (depth', HeadNf expr) benv,
+                shift (depth - depth') 0 expr ))
+      | SBoundVar idx -> (benv, SBoundVar idx)
+      | SFreeVar ident -> (benv, SFreeVar ident)
+      | SApply (l_expr, r_expr) -> (
+          match head_nf depth benv l_expr with
+          | benv, SAbstract (ident, expr) ->
+              print_endline "performing a beta reduction";
+              let n = IMap.cardinal benv in
+              head_nf depth
+                (IMap.add n (depth, Susp r_expr) benv)
+                (subst 0 n expr)
+          | benv, l_expr -> (benv, SApply (l_expr, r_expr)))
+      | SAbstract (ident, expr) ->
+          let benv, expr = head_nf (depth + 1) benv expr in
+          (benv, SAbstract (ident, expr))
+    and head_to_beta_nf depth benv expr =
+      match expr with
+      | SSuspVar key -> failwith "eval"
+      | SBoundVar idx -> (benv, BoundVar idx)
+      | SFreeVar ident -> (benv, FreeVar ident)
+      | SApply (l_expr, r_expr) ->
+          let benv, l_expr = head_to_beta_nf depth benv l_expr in
+          let benv, r_expr = beta_nf depth benv r_expr in
+          (benv, Apply (l_expr, r_expr))
+      | SAbstract (ident, expr) ->
+          let benv, expr = head_to_beta_nf (depth + 1) benv expr in
+          (benv, Abstract (ident, expr))
+    and beta_nf depth benv expr =
+      let benv, expr = head_nf depth benv expr in
+      let benv, expr = head_to_beta_nf depth benv expr in
+      (benv, expr)
+    in
+    let _, expr = expr |> lift |> beta_nf 0 IMap.empty in
+    eta_reduce expr
+end
