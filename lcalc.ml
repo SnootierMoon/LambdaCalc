@@ -260,116 +260,44 @@ module Parse : ParseSig = struct
 end
 
 module Interp = struct
-  type susp_expr =
-    | SSuspVar of int
-    | SBoundVar of int
-    | SFreeVar of string
-    | SApply of (susp_expr * susp_expr)
-    | SAbstract of (string * susp_expr)
-
-  type susp_val =
-    | Susp of susp_expr
-    | HeadNf of susp_expr
-    | BetaNf of susp_expr
-
-  let rec lift expr =
-    match expr with
-    | BoundVar idx -> SBoundVar idx
-    | FreeVar ident -> SFreeVar ident
-    | Apply (l_expr, r_expr) -> SApply (lift l_expr, lift r_expr)
-    | Abstract (ident, expr) -> SAbstract (ident, lift expr)
-
-  let rec shift off depth expr =
-    if off = 0 then expr
+  let rec shift i d u =
+    if i = 0 then u
     else
-      match expr with
-      | SSuspVar key -> SSuspVar key
-      | SBoundVar idx when idx >= depth -> SBoundVar (idx + off)
-      | SBoundVar idx -> SBoundVar idx
-      | SFreeVar ident -> SFreeVar ident
-      | SApply (l_expr, r_expr) ->
-          SApply (shift off depth l_expr, shift off depth r_expr)
-      | SAbstract (ident, expr) -> SAbstract (ident, shift off (depth + 1) expr)
+      match u with
+      | BoundVar idx when idx >= d -> BoundVar (idx + i)
+      | BoundVar idx -> BoundVar idx
+      | FreeVar ident -> FreeVar ident
+      | Apply (l_expr, r_expr) -> Apply (shift i d l_expr, shift i d r_expr)
+      | Abstract (ident, expr) -> Abstract (ident, shift i (d + 1) expr)
 
-  let rec subst depth key expr =
+  let rec subst d u expr =
     match expr with
-    | SSuspVar key -> SSuspVar key
-    | SBoundVar idx when idx < depth -> SBoundVar idx
-    | SBoundVar idx when idx = depth -> SSuspVar key
-    | SBoundVar idx -> SBoundVar (idx - 1)
-    | SFreeVar ident -> SFreeVar ident
-    | SApply (l_expr, r_expr) ->
-        SApply (subst depth key l_expr, subst depth key r_expr)
-    | SAbstract (ident, expr) -> SAbstract (ident, subst (depth + 1) key expr)
+    | BoundVar idx when idx < d -> BoundVar idx
+    | BoundVar idx when idx = d -> shift d 0 u
+    | BoundVar idx -> BoundVar (idx - 1)
+    | FreeVar ident -> FreeVar ident
+    | Apply (l_expr, r_expr) -> Apply (subst d u l_expr, subst d u r_expr)
+    | Abstract (ident, expr) -> Abstract (ident, subst (d + 1) u expr)
 
-  let rec eta_reduce expr =
-    let rec shiftl depth expr =
-      match expr with
-      | BoundVar idx when idx > depth -> Some (BoundVar (idx - 1))
-      | BoundVar idx when idx = depth -> None
-      | BoundVar idx -> Some (BoundVar idx)
-      | FreeVar ident -> Some (FreeVar ident)
-      | Apply (l_expr, r_expr) -> (
-          match (shiftl depth l_expr, shiftl depth r_expr) with
-          | Some l_expr, Some r_expr -> Some (Apply (l_expr, r_expr))
-          | _, _ -> None)
-      | Abstract (ident, expr) -> (
-          match shiftl (depth + 1) expr with
-          | Some expr -> Some (Abstract (ident, expr))
-          | None -> None)
-    in
+  (* returns normal form *)
+  let rec rtnf expr =
     match expr with
     | BoundVar idx -> BoundVar idx
     | FreeVar ident -> FreeVar ident
-    | Apply (l_expr, r_expr) -> Apply (eta_reduce l_expr, eta_reduce r_expr)
-    | Abstract (ident, Apply (expr, BoundVar 0)) -> (
-        match shiftl 0 expr with
-        | Some expr -> eta_reduce expr
-        | None -> Abstract (ident, Apply (eta_reduce expr, BoundVar 0)))
-    | Abstract (ident, expr) -> Abstract (ident, eta_reduce expr)
+    | Apply (l_expr, r_expr) -> (
+        match rtlf l_expr with
+        | Abstract (ident, expr) -> rtnf (subst 0 r_expr expr)
+        | l_expr -> Apply (l_expr, rtnf r_expr))
+    | Abstract (ident, expr) -> Abstract (ident, rtnf expr)
 
-  let eval expr =
-    let rec head_nf depth benv expr =
-      match expr with
-      | SSuspVar key -> (
-          match IMap.find key benv with
-          | depth', (HeadNf expr | BetaNf expr) ->
-              (benv, shift (depth - depth') 0 expr)
-          | depth', Susp expr ->
-              let benv, expr = head_nf depth' benv expr in
-              ( IMap.add key (depth', HeadNf expr) benv,
-                shift (depth - depth') 0 expr ))
-      | SBoundVar idx -> (benv, SBoundVar idx)
-      | SFreeVar ident -> (benv, SFreeVar ident)
-      | SApply (l_expr, r_expr) -> (
-          match head_nf depth benv l_expr with
-          | benv, SAbstract (ident, expr) ->
-              print_endline "performing a beta reduction";
-              let n = IMap.cardinal benv in
-              head_nf depth
-                (IMap.add n (depth, Susp r_expr) benv)
-                (subst 0 n expr)
-          | benv, l_expr -> (benv, SApply (l_expr, r_expr)))
-      | SAbstract (ident, expr) ->
-          let benv, expr = head_nf (depth + 1) benv expr in
-          (benv, SAbstract (ident, expr))
-    and head_to_beta_nf depth benv expr =
-      match expr with
-      | SSuspVar key -> failwith "eval"
-      | SBoundVar idx -> (benv, BoundVar idx)
-      | SFreeVar ident -> (benv, FreeVar ident)
-      | SApply (l_expr, r_expr) ->
-          let benv, l_expr = head_to_beta_nf depth benv l_expr in
-          let benv, r_expr = beta_nf depth benv r_expr in
-          (benv, Apply (l_expr, r_expr))
-      | SAbstract (ident, expr) ->
-          let benv, expr = head_to_beta_nf (depth + 1) benv expr in
-          (benv, Abstract (ident, expr))
-    and beta_nf depth benv expr =
-      let benv, expr = head_nf depth benv expr in
-      let benv, expr = head_to_beta_nf depth benv expr in
-      (benv, expr)
-    in
-    let _, expr = expr |> lift |> beta_nf 0 IMap.empty in
-    eta_reduce expr
+  (* returns either a lambda abstraction or normal form *)
+  and rtlf expr =
+    match expr with
+    | BoundVar idx -> BoundVar idx
+    | FreeVar ident -> FreeVar ident
+    | Apply (l_expr, r_expr) -> (
+        match rtlf l_expr with
+        | Abstract (ident, expr) -> rtlf (subst 0 r_expr expr)
+        | l_expr -> Apply (l_expr, rtnf r_expr))
+    | Abstract (ident, expr) -> Abstract (ident, expr)
 end
